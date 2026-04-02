@@ -6,7 +6,7 @@ import uuid
 import os
 
 from app.database import get_db
-from app.models import PDF, OCRBlock, User, UserRole
+from app.models import PDF, OCRBlock, Assignment, User, UserRole
 from app.routers.auth import get_current_user, require_role
 from app.services.ocr import extract_text_blocks
 from app.services.pdf_security import UPLOAD_DIR, get_pdf_path
@@ -32,6 +32,34 @@ class PDFResponse(BaseModel):
     id: int
     original_name: str
     page_count: int
+
+
+class PDFListItem(BaseModel):
+    id: int
+    original_name: str
+    page_count: int
+    uploaded_at: str | None
+
+
+class SplitBlocksRequest(BaseModel):
+    group_id: int
+
+
+@router.get("/", response_model=list[PDFListItem])
+def list_pdfs(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.instructor)),
+):
+    pdfs = db.query(PDF).order_by(PDF.uploaded_at.desc()).all()
+    return [
+        PDFListItem(
+            id=p.id,
+            original_name=p.original_name,
+            page_count=p.page_count,
+            uploaded_at=p.uploaded_at.isoformat() if p.uploaded_at else None,
+        )
+        for p in pdfs
+    ]
 
 
 @router.post("/upload", response_model=PDFResponse)
@@ -164,3 +192,46 @@ def merge_blocks(
         b.group_id = group_id
     db.commit()
     return {"group_id": group_id, "block_count": len(blocks)}
+
+
+@router.delete("/{pdf_id}")
+def delete_pdf(
+    pdf_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.instructor)),
+):
+    pdf = db.query(PDF).filter(PDF.id == pdf_id).first()
+    if not pdf:
+        raise HTTPException(status_code=404, detail="PDF not found")
+
+    # Check for assignments referencing this PDF
+    assignment_count = db.query(Assignment).filter(Assignment.pdf_id == pdf_id).count()
+    if assignment_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete PDF: assignments reference it",
+        )
+
+    # Delete file from disk
+    filepath = os.path.join(UPLOAD_DIR, pdf.filename)
+    if os.path.exists(filepath):
+        os.remove(filepath)
+
+    db.delete(pdf)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/blocks/split")
+def split_blocks(
+    req: SplitBlocksRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.instructor)),
+):
+    blocks = db.query(OCRBlock).filter(OCRBlock.group_id == req.group_id).all()
+    if not blocks:
+        raise HTTPException(status_code=404, detail="No blocks with that group_id")
+    for b in blocks:
+        b.group_id = None
+    db.commit()
+    return {"ok": True, "block_count": len(blocks)}

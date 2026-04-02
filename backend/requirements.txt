@@ -7,3 +7,6 @@ python-multipart
 python-jose[cryptography]
 passlib
 aiofiles
+spacy
+psycopg2-binary
+alembic

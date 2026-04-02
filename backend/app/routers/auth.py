@@ -43,6 +43,21 @@ class CreateUserResponse(BaseModel):
     access_code: str
 
 
+class UserResponse(BaseModel):
+    id: int
+    pid: str
+    name: str
+    email: str | None
+    role: str
+    access_code: str
+
+
+class UserUpdate(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    role: UserRole | None = None
+
+
 class BatchCreateRequest(BaseModel):
     students: list[CreateUserRequest]
 
@@ -144,6 +159,82 @@ def batch_create_users(req: BatchCreateRequest, db: Session = Depends(get_db)):
         ))
     db.commit()
     return created
+
+
+@router.get("/users", response_model=list[UserResponse])
+def list_users(
+    role: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.instructor)),
+):
+    query = db.query(User)
+    if role:
+        query = query.filter(User.role == role)
+    users = query.order_by(User.id).all()
+    return [
+        UserResponse(
+            id=u.id, pid=u.pid, name=u.name, email=u.email,
+            role=u.role.value, access_code=u.access_code,
+        )
+        for u in users
+    ]
+
+
+@router.patch("/users/{user_id}", response_model=UserResponse)
+def update_user(
+    user_id: int,
+    req: UserUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.instructor)),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if req.name is not None:
+        user.name = req.name
+    if req.email is not None:
+        user.email = req.email
+    if req.role is not None:
+        user.role = req.role
+
+    db.commit()
+    db.refresh(user)
+    return UserResponse(
+        id=user.id, pid=user.pid, name=user.name, email=user.email,
+        role=user.role.value, access_code=user.access_code,
+    )
+
+
+@router.delete("/users/{user_id}")
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.instructor)),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    db.delete(user)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/reset-code")
+def reset_user_code(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.instructor)),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.access_code = secrets.token_urlsafe(16)
+    db.commit()
+    db.refresh(user)
+    return {"access_code": user.access_code}
 
 
 @router.get("/me")

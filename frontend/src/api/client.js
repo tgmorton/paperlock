@@ -16,6 +16,9 @@ async function request(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
 
   if (!res.ok) {
+    if (res.status === 401) {
+      window.dispatchEvent(new Event("session-expired"));
+    }
     const error = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(error.detail || "Request failed");
   }
@@ -85,4 +88,29 @@ export const api = {
     request(`/grading/auto-grade/${assignmentId}`, { method: "POST" }),
   exportCsv: (assignmentId) =>
     request(`/grading/export/${assignmentId}`),
+
+  // PDF management
+  listPdfs: () => request("/pdf/"),
+  deletePdf: (id) => request(`/pdf/${id}`, { method: "DELETE" }),
+  splitBlocks: (groupId) =>
+    request("/pdf/blocks/split", { method: "POST", body: { group_id: groupId } }),
+
+  // Assignment management
+  updateAssignment: (id, data) =>
+    request(`/assignments/${id}`, { method: "PUT", body: data }),
+  deleteAssignment: (id) =>
+    request(`/assignments/${id}`, { method: "DELETE" }),
+  updateQuestion: (assignmentId, questionId, data) =>
+    request(`/assignments/${assignmentId}/questions/${questionId}`, { method: "PUT", body: data }),
+  deleteQuestion: (assignmentId, questionId) =>
+    request(`/assignments/${assignmentId}/questions/${questionId}`, { method: "DELETE" }),
+
+  // User management
+  listUsers: (role) => request(`/auth/users${role ? `?role=${role}` : ""}`),
+  updateUser: (id, data) =>
+    request(`/auth/users/${id}`, { method: "PATCH", body: data }),
+  deleteUser: (id) =>
+    request(`/auth/users/${id}`, { method: "DELETE" }),
+  resetUserCode: (id) =>
+    request(`/auth/users/${id}/reset-code`, { method: "POST" }),
 };

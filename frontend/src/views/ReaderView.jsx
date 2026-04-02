@@ -5,6 +5,8 @@ import PdfViewer from "../components/PdfViewer";
 import BlockOverlay from "../components/BlockOverlay";
 import QuestionPanel from "../components/QuestionPanel";
 import SearchBar from "../components/SearchBar";
+import SaveIndicator from "../components/SaveIndicator";
+import { useSaveState } from "../hooks/useSaveState";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -43,6 +45,37 @@ export default function ReaderView() {
   const [loadError, setLoadError] = useState(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [instructionBanner, setInstructionBanner] = useState(null);
+
+  const blockSaveFn = useCallback(
+    (data) => {
+      if (!submission) return;
+      return api.saveAnswer(submission.id, data);
+    },
+    [submission]
+  );
+
+  const freeTextSaveFn = useCallback(
+    (data) => {
+      if (!submission) return;
+      return api.saveAnswer(submission.id, data);
+    },
+    [submission]
+  );
+
+  const { triggerSave: triggerBlockSave, status: blockSaveStatus } =
+    useSaveState(blockSaveFn);
+  const { triggerSave: triggerFreeTextSave, status: freeTextSaveStatus } =
+    useSaveState(freeTextSaveFn, { debounceMs: 300 });
+
+  // Combined save status: prefer showing the most "active" state
+  const saveStatus =
+    blockSaveStatus === "error" || freeTextSaveStatus === "error"
+      ? "error"
+      : blockSaveStatus === "saving" || freeTextSaveStatus === "saving"
+        ? "saving"
+        : blockSaveStatus === "saved" || freeTextSaveStatus === "saved"
+          ? "saved"
+          : "idle";
 
   useEffect(() => {
     async function load() {
@@ -128,13 +161,13 @@ export default function ReaderView() {
       const newAnswer = { ...current, selected_block_ids: newSelected };
       setAnswers((prev) => ({ ...prev, [activeQuestionId]: newAnswer }));
 
-      await api.saveAnswer(submission.id, {
+      await triggerBlockSave({
         question_id: activeQuestionId,
         selected_block_ids: newSelected,
         free_text: current.free_text,
       });
     },
-    [activeQuestionId, answers, assignment, submission]
+    [activeQuestionId, answers, assignment, submission, triggerBlockSave]
   );
 
   const handleFreeTextChange = useCallback(
@@ -146,15 +179,13 @@ export default function ReaderView() {
       const newAnswer = { ...current, free_text: text };
       setAnswers((prev) => ({ ...prev, [questionId]: newAnswer }));
 
-      if (submission) {
-        await api.saveAnswer(submission.id, {
-          question_id: questionId,
-          selected_block_ids: current.selected_block_ids,
-          free_text: text,
-        });
-      }
+      await triggerFreeTextSave({
+        question_id: questionId,
+        selected_block_ids: current.selected_block_ids,
+        free_text: text,
+      });
     },
-    [answers, submission]
+    [answers, triggerFreeTextSave]
   );
 
   const handleSubmit = async () => {
@@ -265,6 +296,7 @@ export default function ReaderView() {
           </Button>
           <div className="reader-topbar-sep" />
           <span className="reader-topbar-title">{assignment.title}</span>
+          <SaveIndicator status={saveStatus} />
         </div>
 
         <div className="reader-topbar-center">

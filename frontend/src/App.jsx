@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
+import ErrorBoundary from "./components/ErrorBoundary";
+import SessionExpiredModal from "./components/SessionExpiredModal";
 import LoginView from "./views/LoginView";
 import StudentDashboard from "./views/StudentDashboard";
 import ReaderView from "./views/ReaderView";
@@ -28,46 +30,49 @@ function RoleRouter() {
 
 function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<LoginView />} />
-          <Route path="/" element={<RoleRouter />} />
-          <Route
-            path="/dashboard"
-            element={
-              <ProtectedRoute allowedRoles={["student"]}>
-                <StudentDashboard />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/read/:assignmentId"
-            element={
-              <ProtectedRoute allowedRoles={["student"]}>
-                <ReaderView />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/instructor"
-            element={
-              <ProtectedRoute allowedRoles={["instructor"]}>
-                <InstructorView />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/grading/:assignmentId"
-            element={
-              <ProtectedRoute allowedRoles={["instructor", "ta"]}>
-                <GradingView />
-              </ProtectedRoute>
-            }
-          />
-        </Routes>
-      </BrowserRouter>
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <SessionExpiredModal />
+        <BrowserRouter>
+          <Routes>
+            <Route path="/login" element={<LoginView />} />
+            <Route path="/" element={<RoleRouter />} />
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute allowedRoles={["student"]}>
+                  <StudentDashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/read/:assignmentId"
+              element={
+                <ProtectedRoute allowedRoles={["student"]}>
+                  <ReaderView />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/instructor"
+              element={
+                <ProtectedRoute allowedRoles={["instructor"]}>
+                  <InstructorView />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/grading/:assignmentId"
+              element={
+                <ProtectedRoute allowedRoles={["instructor", "ta"]}>
+                  <GradingView />
+                </ProtectedRoute>
+              }
+            />
+          </Routes>
+        </BrowserRouter>
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }
 
