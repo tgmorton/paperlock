@@ -3,6 +3,8 @@ import { useParams, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import PdfViewer from "../components/PdfViewer";
 import BlockOverlay from "../components/BlockOverlay";
+import AnnotationOverlay from "../components/AnnotationOverlay";
+import AnnotationTools from "../components/AnnotationTools";
 import QuestionPanel from "../components/QuestionPanel";
 import SearchBar from "../components/SearchBar";
 import SaveIndicator from "../components/SaveIndicator";
@@ -45,37 +47,25 @@ export default function ReaderView() {
   const [loadError, setLoadError] = useState(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [instructionBanner, setInstructionBanner] = useState(null);
+  const [annotations, setAnnotations] = useState([]);
+  const [annotationMode, setAnnotationMode] = useState("off");
+  const [highlightColor, setHighlightColor] = useState("#FFEB3B");
 
+  // Save state hooks
   const blockSaveFn = useCallback(
-    (data) => {
-      if (!submission) return;
-      return api.saveAnswer(submission.id, data);
-    },
+    (data) => submission ? api.saveAnswer(submission.id, data) : undefined,
     [submission]
   );
-
   const freeTextSaveFn = useCallback(
-    (data) => {
-      if (!submission) return;
-      return api.saveAnswer(submission.id, data);
-    },
+    (data) => submission ? api.saveAnswer(submission.id, data) : undefined,
     [submission]
   );
-
-  const { triggerSave: triggerBlockSave, status: blockSaveStatus } =
-    useSaveState(blockSaveFn);
-  const { triggerSave: triggerFreeTextSave, status: freeTextSaveStatus } =
-    useSaveState(freeTextSaveFn, { debounceMs: 300 });
-
-  // Combined save status: prefer showing the most "active" state
-  const saveStatus =
-    blockSaveStatus === "error" || freeTextSaveStatus === "error"
-      ? "error"
-      : blockSaveStatus === "saving" || freeTextSaveStatus === "saving"
-        ? "saving"
-        : blockSaveStatus === "saved" || freeTextSaveStatus === "saved"
-          ? "saved"
-          : "idle";
+  const { triggerSave: triggerBlockSave, status: blockSaveStatus } = useSaveState(blockSaveFn);
+  const { triggerSave: triggerFreeTextSave, status: freeTextSaveStatus } = useSaveState(freeTextSaveFn, { debounceMs: 300 });
+  const saveStatus = blockSaveStatus === "error" || freeTextSaveStatus === "error" ? "error"
+    : blockSaveStatus === "saving" || freeTextSaveStatus === "saving" ? "saving"
+    : blockSaveStatus === "saved" || freeTextSaveStatus === "saved" ? "saved" : "idle";
+  const [activeNoteId, setActiveNoteId] = useState(null);
 
   useEffect(() => {
     async function load() {
@@ -95,6 +85,14 @@ export default function ReaderView() {
           };
         }
         setAnswers(restored);
+
+        // Load annotations
+        try {
+          const anns = await api.getAnnotations(a.pdf_id);
+          setAnnotations(anns);
+        } catch (annErr) {
+          console.warn("Could not load annotations:", annErr);
+        }
       } catch (err) {
         console.error("Load error:", err);
         setLoadError(err.message);
@@ -134,8 +132,141 @@ export default function ReaderView() {
     [assignment]
   );
 
+  // --- Annotation handlers (defined before handleBlockClick so it can reference them) ---
+
+  // When switching annotation mode on, deselect any active question
+  const handleAnnotationModeChange = useCallback(
+    (newMode) => {
+      setAnnotationMode(newMode);
+      if (newMode !== "off") {
+        setActiveQuestionId(null);
+        setInstructionBanner(null);
+      }
+      setActiveNoteId(null);
+    },
+    []
+  );
+
+  // When selecting a question, turn off annotation mode
+  const handleQuestionSelectWrapped = useCallback(
+    (questionId) => {
+      setAnnotationMode("off");
+      setActiveNoteId(null);
+      handleQuestionSelect(questionId);
+    },
+    [handleQuestionSelect]
+  );
+
+  const handleDeleteAnnotation = useCallback(async (id) => {
+    await api.deleteAnnotation(id);
+    setAnnotations((prev) => prev.filter((a) => a.id !== id));
+    setActiveNoteId((prev) => (prev === id ? null : prev));
+  }, []);
+
+  const handleNoteUpdate = useCallback(async (id, content) => {
+    // Optimistically update local state then delete + recreate on the backend
+    setAnnotations((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, content } : a))
+    );
+    const ann = annotations.find((a) => a.id === id);
+    if (!ann) return;
+    try {
+      await api.deleteAnnotation(id);
+      const created = await api.createAnnotation({
+        pdf_id: ann.pdf_id,
+        page_number: ann.page_number,
+        annotation_type: ann.annotation_type,
+        position_data: ann.position_data,
+        content,
+        color: ann.color,
+      });
+      setAnnotations((prev) =>
+        prev.map((a) => (a.id === id ? created : a))
+      );
+      setActiveNoteId(created.id);
+    } catch (err) {
+      console.error("Failed to update note:", err);
+    }
+  }, [annotations]);
+
+  // Create highlight annotation from block click
+  const handleAnnotationBlockClick = useCallback(
+    async (blockIds) => {
+      if (annotationMode !== "highlight" || !assignment) return;
+      const matchedBlocks = blocks.filter((b) => blockIds.includes(b.id));
+      if (matchedBlocks.length === 0) return;
+
+      const minX = Math.min(...matchedBlocks.map((b) => b.x));
+      const minY = Math.min(...matchedBlocks.map((b) => b.y));
+      const maxX = Math.max(...matchedBlocks.map((b) => b.x + b.width));
+      const maxY = Math.max(...matchedBlocks.map((b) => b.y + b.height));
+
+      const positionData = {
+        x: minX,
+        y: minY,
+        width: maxX - minX,
+        height: maxY - minY,
+      };
+
+      try {
+        const created = await api.createAnnotation({
+          pdf_id: assignment.pdf_id,
+          page_number: matchedBlocks[0].page_number,
+          annotation_type: "highlight",
+          position_data: positionData,
+          color: highlightColor,
+        });
+        setAnnotations((prev) => [...prev, created]);
+      } catch (err) {
+        console.error("Failed to create highlight:", err);
+      }
+    },
+    [annotationMode, assignment, blocks, highlightColor]
+  );
+
+  // Create note annotation from page click
+  const handlePageClickForNote = useCallback(
+    async (e, pageIndex, dims) => {
+      if (annotationMode !== "note" || !assignment || !dims) return;
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const xPct = ((e.clientX - rect.left) / dims.width) * 100;
+      const yPct = ((e.clientY - rect.top) / dims.height) * 100;
+
+      const positionData = {
+        x: Math.max(0, Math.min(xPct, 100)),
+        y: Math.max(0, Math.min(yPct, 100)),
+        width: 2,
+        height: 2,
+      };
+
+      try {
+        const created = await api.createAnnotation({
+          pdf_id: assignment.pdf_id,
+          page_number: pageIndex,
+          annotation_type: "note",
+          position_data: positionData,
+          content: "",
+        });
+        setAnnotations((prev) => [...prev, created]);
+        setActiveNoteId(created.id);
+      } catch (err) {
+        console.error("Failed to create note:", err);
+      }
+    },
+    [annotationMode, assignment]
+  );
+
+  // --- Block click and question handlers ---
+
   const handleBlockClick = useCallback(
     async (blockIds) => {
+      // Route to annotation creation if highlight mode is active
+      if (annotationMode === "highlight") {
+        handleAnnotationBlockClick(blockIds);
+        return;
+      }
+
       if (!activeQuestionId || !submission || submission.is_submitted) return;
 
       const question = assignment.questions.find(
@@ -167,7 +298,7 @@ export default function ReaderView() {
         free_text: current.free_text,
       });
     },
-    [activeQuestionId, answers, assignment, submission, triggerBlockSave]
+    [activeQuestionId, answers, assignment, submission, annotationMode, handleAnnotationBlockClick, triggerBlockSave]
   );
 
   const handleFreeTextChange = useCallback(
@@ -236,21 +367,48 @@ export default function ReaderView() {
   // Render overlay for a specific page
   const renderOverlay = useCallback(
     (pageIndex, dims) => (
-      <BlockOverlay
-        key={pageIndex}
-        blocks={blocks}
-        pageDimensions={dims}
-        pageIndex={pageIndex}
-        activeQuestionId={activeQuestionId}
-        selectionGranularity={selectionGranularity}
-        selectedBlockIds={[
-          ...selectedBlockIds,
-          ...(searchHighlight ? [searchHighlight] : []),
-        ]}
-        onBlockClick={handleBlockClick}
-        searchHighlightId={searchHighlight}
-        showHints={showHints}
-      />
+      <>
+        {/* Annotation overlay — behind block overlay when answering questions */}
+        <AnnotationOverlay
+          annotations={annotations.filter((a) => a.page_number === pageIndex)}
+          pageIndex={pageIndex}
+          pageDimensions={dims}
+          onDeleteAnnotation={handleDeleteAnnotation}
+          onNoteClick={setActiveNoteId}
+          activeNoteId={activeNoteId}
+          onNoteUpdate={handleNoteUpdate}
+          disabled={!!activeQuestionId}
+        />
+        <BlockOverlay
+          blocks={blocks}
+          pageDimensions={dims}
+          pageIndex={pageIndex}
+          activeQuestionId={annotationMode === "highlight" ? "__annotation__" : activeQuestionId}
+          selectionGranularity={selectionGranularity}
+          selectedBlockIds={[
+            ...selectedBlockIds,
+            ...(searchHighlight ? [searchHighlight] : []),
+          ]}
+          onBlockClick={handleBlockClick}
+          searchHighlightId={searchHighlight}
+          showHints={showHints}
+        />
+        {/* Click target for note creation */}
+        {annotationMode === "note" && (
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: dims.width,
+              height: dims.height,
+              cursor: "crosshair",
+              zIndex: 10,
+            }}
+            onClick={(e) => handlePageClickForNote(e, pageIndex, dims)}
+          />
+        )}
+      </>
     ),
     [
       blocks,
@@ -260,6 +418,12 @@ export default function ReaderView() {
       handleBlockClick,
       searchHighlight,
       showHints,
+      annotations,
+      activeNoteId,
+      handleDeleteAnnotation,
+      handleNoteUpdate,
+      annotationMode,
+      handlePageClickForNote,
     ]
   );
 
@@ -314,6 +478,13 @@ export default function ReaderView() {
         </div>
 
         <div className="reader-topbar-right">
+          <AnnotationTools
+            mode={annotationMode}
+            onModeChange={handleAnnotationModeChange}
+            highlightColor={highlightColor}
+            onColorChange={setHighlightColor}
+          />
+          <div className="reader-topbar-sep" />
           {assignment.available_until && (
             <Badge variant="outline" className="reader-deadline-badge">
               <Clock className="size-3 mr-1" />
@@ -369,7 +540,7 @@ export default function ReaderView() {
           answers={answers}
           blocks={blocks}
           activeQuestionId={activeQuestionId}
-          onQuestionSelect={handleQuestionSelect}
+          onQuestionSelect={handleQuestionSelectWrapped}
           onFreeTextChange={handleFreeTextChange}
           onSubmit={handleSubmit}
           isSubmitted={submission?.is_submitted || false}

@@ -7,6 +7,8 @@ import StudentDashboard from "./views/StudentDashboard";
 import ReaderView from "./views/ReaderView";
 import InstructorView from "./views/InstructorView";
 import GradingView from "./views/GradingView";
+import QuestionBuilderView from "./views/QuestionBuilderView";
+import BlockEditorView from "./views/BlockEditorView";
 import "./App.css";
 
 function ProtectedRoute({ children, allowedRoles }) {
@@ -58,6 +60,22 @@ function App() {
               element={
                 <ProtectedRoute allowedRoles={["instructor"]}>
                   <InstructorView />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/instructor/assignment/:assignmentId/questions"
+              element={
+                <ProtectedRoute allowedRoles={["instructor"]}>
+                  <QuestionBuilderView />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/instructor/pdf/:pdfId/blocks"
+              element={
+                <ProtectedRoute allowedRoles={["instructor"]}>
+                  <BlockEditorView />
                 </ProtectedRoute>
               }
             />
