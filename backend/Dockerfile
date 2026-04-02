@@ -1,13 +1,14 @@
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    python -m spacy download en_core_web_sm
 
 COPY . .
 
-RUN mkdir -p uploads data
+RUN mkdir -p uploads
 
 EXPOSE 8000
 
