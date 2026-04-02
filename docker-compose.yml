@@ -1,0 +1,21 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - db-data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:///./data/paperlock.db
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  db-data:
