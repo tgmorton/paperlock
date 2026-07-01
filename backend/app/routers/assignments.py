@@ -64,6 +64,10 @@ class AssignmentUpdate(BaseModel):
     available_until: datetime | None = None
 
 
+class PublishRequest(BaseModel):
+    published: bool
+
+
 class QuestionUpdate(BaseModel):
     prompt: str | None = None
     question_type: QuestionType | None = None
@@ -143,6 +147,7 @@ class AssignmentResponse(BaseModel):
     pdf_id: int
     available_from: datetime | None
     available_until: datetime | None
+    is_published: bool = False
     questions: list[QuestionResponse]
     sections: list[SectionResponse] = []
     # Per-student status (populated when a student lists assignments).
@@ -231,10 +236,12 @@ def list_assignments(
 ):
     query = db.query(Assignment)
 
-    # Students only see available assignments
+    # Students only see published assignments that are within their availability
+    # window. Unpublished (draft) assignments are invisible regardless of dates.
     if current_user.role == UserRole.student:
         now = datetime.now(timezone.utc)
         query = query.filter(
+            Assignment.is_published == True,
             (Assignment.available_from == None) | (Assignment.available_from <= now),
             (Assignment.available_until == None) | (Assignment.available_until >= now),
         )
@@ -270,9 +277,12 @@ def get_assignment(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    # Students may only load an assignment while it is open (direct-URL access
-    # would otherwise bypass the dashboard's availability filtering).
+    # Students may only load a published assignment while it is open (direct-URL
+    # access would otherwise bypass the dashboard's filtering). A draft looks
+    # like it doesn't exist.
     if current_user.role == UserRole.student:
+        if not assignment.is_published:
+            raise HTTPException(status_code=404, detail="Assignment not found")
         now = datetime.now(timezone.utc)
         start = assignment.available_from
         end = assignment.available_until
@@ -339,6 +349,24 @@ def update_assignment(
     if "available_until" in fields_set:
         assignment.available_until = req.available_until
 
+    db.commit()
+    db.refresh(assignment)
+    return _format_assignment(assignment)
+
+
+@router.post("/{assignment_id}/publish", response_model=AssignmentResponse)
+def set_publish_state(
+    assignment_id: int,
+    req: PublishRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.instructor)),
+):
+    """Publish or unpublish an assignment. A draft (unpublished) assignment is
+    invisible to students regardless of its availability dates."""
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    assignment.is_published = req.published
     db.commit()
     db.refresh(assignment)
     return _format_assignment(assignment)
@@ -783,7 +811,7 @@ def _format_assignment(a: Assignment) -> AssignmentResponse:
     return AssignmentResponse(
         id=a.id, title=a.title, description=a.description,
         pdf_id=a.pdf_id, available_from=a.available_from,
-        available_until=a.available_until,
+        available_until=a.available_until, is_published=a.is_published,
         questions=[_format_question(q) for q in a.questions],
         sections=[
             SectionResponse(id=s.id, title=s.title, description=s.description, order=s.order)

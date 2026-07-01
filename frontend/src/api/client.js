@@ -123,6 +123,8 @@ export const api = {
   // Assignment management
   updateAssignment: (id, data) =>
     request(`/assignments/${id}`, { method: "PUT", body: data }),
+  setAssignmentPublished: (id, published) =>
+    request(`/assignments/${id}/publish`, { method: "POST", body: { published } }),
   deleteAssignment: (id) =>
     request(`/assignments/${id}`, { method: "DELETE" }),
   updateQuestion: (assignmentId, questionId, data) =>

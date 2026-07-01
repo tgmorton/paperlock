@@ -28,6 +28,8 @@ import {
   Clock,
   CheckCircle,
   XCircle,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -232,7 +234,28 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
   const [deleteConfirm, setDeleteConfirm] = useState({ open: false, id: null, title: "" });
   const [importing, setImporting] = useState(false);
   const [exportingId, setExportingId] = useState(null);
+  const [publishingId, setPublishingId] = useState(null);
   const importInputRef = useRef(null);
+
+  // Publish makes an assignment visible to students; unpublish hides it again
+  // (a draft is invisible regardless of its availability dates).
+  const handlePublishToggle = async (a) => {
+    setPublishingId(a.id);
+    try {
+      await api.setAssignmentPublished(a.id, !a.is_published);
+      toast({
+        type: "success",
+        message: a.is_published
+          ? `"${a.title}" unpublished — hidden from students.`
+          : `"${a.title}" published — now visible to students.`,
+      });
+      refreshAssignments();
+    } catch (err) {
+      toast({ type: "error", message: err.message || "Publish failed" });
+    } finally {
+      setPublishingId(null);
+    }
+  };
 
   const pdfMap = Object.fromEntries(pdfs.map((p) => [p.id, p]));
 
@@ -531,10 +554,19 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
             <div key={a.id} className="assignment-card">
               <div className="assignment-card-top">
                 <h3>{a.title}</h3>
-                <Badge variant={statusVariant(status)}>
-                  <StatusIcon status={status} />
-                  {status}
-                </Badge>
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <Badge variant={a.is_published ? "default" : "secondary"}>
+                    {a.is_published ? (
+                      <><Eye className="size-3" /> Published</>
+                    ) : (
+                      <><EyeOff className="size-3" /> Draft</>
+                    )}
+                  </Badge>
+                  <Badge variant={statusVariant(status)}>
+                    <StatusIcon status={status} />
+                    {status}
+                  </Badge>
+                </div>
               </div>
               {a.description && (
                 <p
@@ -574,6 +606,23 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
                 )}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                <Button
+                  variant={a.is_published ? "outline" : "default"}
+                  size="sm"
+                  onClick={() => handlePublishToggle(a)}
+                  disabled={publishingId === a.id}
+                  title={
+                    a.is_published
+                      ? "Hide this assignment from students"
+                      : "Make this assignment visible to students"
+                  }
+                >
+                  {a.is_published ? (
+                    <><EyeOff className="size-3" /> Unpublish</>
+                  ) : (
+                    <><Eye className="size-3" /> Publish</>
+                  )}
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"

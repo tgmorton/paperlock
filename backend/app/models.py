@@ -94,6 +94,9 @@ class Assignment(Base):
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     available_from = Column(DateTime, nullable=True)
     available_until = Column(DateTime, nullable=True)
+    # Draft by default: students never see an assignment until it's published,
+    # regardless of availability dates. Imported bundles come in as drafts.
+    is_published = Column(Boolean, nullable=False, default=False, server_default="0")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     pdf = relationship("PDF", back_populates="assignments")
