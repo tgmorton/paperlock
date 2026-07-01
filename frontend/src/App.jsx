@@ -2,10 +2,12 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
 import ErrorBoundary from "./components/ErrorBoundary";
 import SessionExpiredModal from "./components/SessionExpiredModal";
+import { ToastProvider } from "./components/Toast";
 import LoginView from "./views/LoginView";
 import StudentDashboard from "./views/StudentDashboard";
 import ReaderView from "./views/ReaderView";
 import InstructorView from "./views/InstructorView";
+import GradingHome from "./views/GradingHome";
 import GradingView from "./views/GradingView";
 import QuestionBuilderView from "./views/QuestionBuilderView";
 import BlockEditorView from "./views/BlockEditorView";
@@ -33,11 +35,12 @@ function RoleRouter() {
 function App() {
   return (
     <ErrorBoundary>
-      <AuthProvider>
-        <SessionExpiredModal />
-        <BrowserRouter>
-          <Routes>
-            <Route path="/login" element={<LoginView />} />
+      <ToastProvider>
+        <AuthProvider>
+          <SessionExpiredModal />
+          <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/+$/, "") || "/"}>
+            <Routes>
+              <Route path="/login" element={<LoginView />} />
             <Route path="/" element={<RoleRouter />} />
             <Route
               path="/dashboard"
@@ -80,6 +83,14 @@ function App() {
               }
             />
             <Route
+              path="/grading"
+              element={
+                <ProtectedRoute allowedRoles={["instructor", "ta"]}>
+                  <GradingHome />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/grading/:assignmentId"
               element={
                 <ProtectedRoute allowedRoles={["instructor", "ta"]}>
@@ -87,9 +98,11 @@ function App() {
                 </ProtectedRoute>
               }
             />
-          </Routes>
-        </BrowserRouter>
-      </AuthProvider>
+            <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </BrowserRouter>
+        </AuthProvider>
+      </ToastProvider>
     </ErrorBoundary>
   );
 }

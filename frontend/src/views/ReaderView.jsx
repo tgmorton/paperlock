@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import PdfViewer from "../components/PdfViewer";
@@ -50,6 +50,24 @@ export default function ReaderView() {
   const [annotations, setAnnotations] = useState([]);
   const [annotationMode, setAnnotationMode] = useState("off");
   const [highlightColor, setHighlightColor] = useState("#FFEB3B");
+  const [jumpTarget, setJumpTarget] = useState(null);
+
+  // answersRef is the synchronous source of truth for answers (the `answers`
+  // state mirrors it for rendering). Handlers read/write the ref so that
+  // back-to-back edits compound correctly and saves never use a stale/undefined
+  // value — React does not run setState updaters synchronously.
+  const answersRef = useRef({});
+  const applyAnswer = useCallback((questionId, updater) => {
+    const prev = answersRef.current[questionId] || {
+      selected_block_ids: [],
+      free_text: "",
+      selected_options: [],
+    };
+    const nextAnswer = updater(prev);
+    answersRef.current = { ...answersRef.current, [questionId]: nextAnswer };
+    setAnswers(answersRef.current);
+    return nextAnswer;
+  }, []);
 
   // Save state hooks
   const blockSaveFn = useCallback(
@@ -60,8 +78,8 @@ export default function ReaderView() {
     (data) => submission ? api.saveAnswer(submission.id, data) : undefined,
     [submission]
   );
-  const { triggerSave: triggerBlockSave, status: blockSaveStatus } = useSaveState(blockSaveFn);
-  const { triggerSave: triggerFreeTextSave, status: freeTextSaveStatus } = useSaveState(freeTextSaveFn, { debounceMs: 300 });
+  const { triggerSave: triggerBlockSave, flush: flushBlockSave, status: blockSaveStatus } = useSaveState(blockSaveFn);
+  const { triggerSave: triggerFreeTextSave, flush: flushFreeTextSave, status: freeTextSaveStatus } = useSaveState(freeTextSaveFn, { debounceMs: 300 });
   const saveStatus = blockSaveStatus === "error" || freeTextSaveStatus === "error" ? "error"
     : blockSaveStatus === "saving" || freeTextSaveStatus === "saving" ? "saving"
     : blockSaveStatus === "saved" || freeTextSaveStatus === "saved" ? "saved" : "idle";
@@ -82,8 +100,10 @@ export default function ReaderView() {
           restored[ans.question_id] = {
             selected_block_ids: ans.selected_block_ids || [],
             free_text: ans.free_text || "",
+            selected_options: ans.selected_options || [],
           };
         }
+        answersRef.current = restored;
         setAnswers(restored);
 
         // Load annotations
@@ -164,30 +184,18 @@ export default function ReaderView() {
   }, []);
 
   const handleNoteUpdate = useCallback(async (id, content) => {
-    // Optimistically update local state then delete + recreate on the backend
+    // Optimistically update in place; persist with a PATCH so the annotation
+    // keeps its id (no remount, no lost focus, and it can't fail on a missing
+    // pdf_id the way a delete+recreate did).
     setAnnotations((prev) =>
       prev.map((a) => (a.id === id ? { ...a, content } : a))
     );
-    const ann = annotations.find((a) => a.id === id);
-    if (!ann) return;
     try {
-      await api.deleteAnnotation(id);
-      const created = await api.createAnnotation({
-        pdf_id: ann.pdf_id,
-        page_number: ann.page_number,
-        annotation_type: ann.annotation_type,
-        position_data: ann.position_data,
-        content,
-        color: ann.color,
-      });
-      setAnnotations((prev) =>
-        prev.map((a) => (a.id === id ? created : a))
-      );
-      setActiveNoteId(created.id);
+      await api.updateAnnotation(id, { content });
     } catch (err) {
       console.error("Failed to update note:", err);
     }
-  }, [annotations]);
+  }, []);
 
   // Create highlight annotation from block click
   const handleAnnotationBlockClick = useCallback(
@@ -272,55 +280,114 @@ export default function ReaderView() {
       const question = assignment.questions.find(
         (q) => q.id === activeQuestionId
       );
-      const current = answers[activeQuestionId] || {
-        selected_block_ids: [],
-        free_text: "",
-      };
+      // Block clicks only answer region-select questions.
+      if (question?.question_type !== "region_select") return;
 
-      let newSelected;
-      if (question.allow_multiple) {
-        const existing = new Set(current.selected_block_ids);
-        for (const id of blockIds) {
-          if (existing.has(id)) existing.delete(id);
-          else existing.add(id);
+      const result = applyAnswer(activeQuestionId, (current) => {
+        let newSelected;
+        if (question.allow_multiple) {
+          const existing = new Set(current.selected_block_ids);
+          for (const id of blockIds) {
+            if (existing.has(id)) existing.delete(id);
+            else existing.add(id);
+          }
+          newSelected = [...existing];
+        } else {
+          newSelected = blockIds;
         }
-        newSelected = [...existing];
-      } else {
-        newSelected = blockIds;
-      }
-
-      const newAnswer = { ...current, selected_block_ids: newSelected };
-      setAnswers((prev) => ({ ...prev, [activeQuestionId]: newAnswer }));
+        return { ...current, selected_block_ids: newSelected };
+      });
 
       await triggerBlockSave({
         question_id: activeQuestionId,
-        selected_block_ids: newSelected,
-        free_text: current.free_text,
+        selected_block_ids: result.selected_block_ids,
+        free_text: result.free_text,
+        selected_options: result.selected_options,
       });
     },
-    [activeQuestionId, answers, assignment, submission, annotationMode, handleAnnotationBlockClick, triggerBlockSave]
+    [activeQuestionId, assignment, submission, annotationMode, handleAnnotationBlockClick, applyAnswer, triggerBlockSave]
   );
+
+  const handleOptionChange = useCallback(
+    async (questionId, optionIndex) => {
+      if (!submission || submission.is_submitted) return;
+      const question = assignment.questions.find((q) => q.id === questionId);
+      if (!question) return;
+      const result = applyAnswer(questionId, (current) => {
+        const cur = current.selected_options || [];
+        const next = question.allow_multiple
+          ? cur.includes(optionIndex)
+            ? cur.filter((i) => i !== optionIndex)
+            : [...cur, optionIndex]
+          : [optionIndex];
+        return { ...current, selected_options: next };
+      });
+      await triggerBlockSave({
+        question_id: questionId,
+        selected_block_ids: result.selected_block_ids,
+        free_text: result.free_text,
+        selected_options: result.selected_options,
+      });
+    },
+    [assignment, submission, applyAnswer, triggerBlockSave]
+  );
+
+  // Positional answers for matching (right-index per left), cloze (bank-index
+  // per blank), and scale (value at index 0) — all stored in selected_options.
+  const handlePositionalSelect = useCallback(
+    async (questionId, position, value) => {
+      if (!submission || submission.is_submitted) return;
+      const result = applyAnswer(questionId, (current) => {
+        const arr = Array.isArray(current.selected_options)
+          ? [...current.selected_options]
+          : [];
+        arr[position] = value;
+        return { ...current, selected_options: arr };
+      });
+      await triggerBlockSave({
+        question_id: questionId,
+        selected_block_ids: result.selected_block_ids,
+        free_text: result.free_text,
+        selected_options: result.selected_options,
+      });
+    },
+    [submission, applyAnswer, triggerBlockSave]
+  );
+
+  const handleJumpToPage = useCallback((page) => {
+    setJumpTarget((prev) => ({ page, n: (prev?.n || 0) + 1 }));
+  }, []);
 
   const handleFreeTextChange = useCallback(
     async (questionId, text) => {
-      const current = answers[questionId] || {
-        selected_block_ids: [],
-        free_text: "",
-      };
-      const newAnswer = { ...current, free_text: text };
-      setAnswers((prev) => ({ ...prev, [questionId]: newAnswer }));
-
+      const result = applyAnswer(questionId, (current) => ({
+        ...current,
+        free_text: text,
+      }));
       await triggerFreeTextSave({
         question_id: questionId,
-        selected_block_ids: current.selected_block_ids,
+        selected_block_ids: result.selected_block_ids,
         free_text: text,
+        selected_options: result.selected_options,
       });
     },
-    [answers, triggerFreeTextSave]
+    [applyAnswer, triggerFreeTextSave]
   );
 
   const handleSubmit = async () => {
     if (!submission) return;
+    // Flush any pending debounced/in-flight saves so the last keystrokes are
+    // persisted before the submission is locked (a save after submit is
+    // rejected by the server). If a save fails, abort the submit and surface
+    // the error rather than locking in unsaved answers.
+    try {
+      await flushFreeTextSave();
+      await flushBlockSave();
+    } catch {
+      throw new Error(
+        "Couldn't save your latest answer before submitting. Check your connection and try again."
+      );
+    }
     await api.submit(submission.id);
     setSubmission({ ...submission, is_submitted: true });
   };
@@ -338,11 +405,26 @@ export default function ReaderView() {
   // Compute progress
   const answeredCount = useMemo(() => {
     if (!assignment) return 0;
+    const filled = (arr) => (arr || []).filter((v) => v != null).length;
     return assignment.questions.filter((q) => {
       const a = answers[q.id];
-      return q.question_type === "free_text"
-        ? !!a?.free_text
-        : a?.selected_block_ids?.length > 0;
+      switch (q.question_type) {
+        case "free_text":
+        case "short_answer":
+          return !!a?.free_text?.trim();
+        case "multiple_choice":
+        case "scale":
+          return a?.selected_options?.length > 0;
+        case "matching":
+          return filled(a?.selected_options) >= (q.match_left || []).length &&
+            (q.match_left || []).length > 0;
+        case "cloze": {
+          const blanks = ((q.cloze_text || "").match(/\{\{\d+\}\}/g) || []).length;
+          return blanks > 0 && filled(a?.selected_options) >= blanks;
+        }
+        default:
+          return a?.selected_block_ids?.length > 0;
+      }
     }).length;
   }, [assignment, answers]);
 
@@ -361,6 +443,11 @@ export default function ReaderView() {
   const showHints =
     activeQuestion?.question_type === "region_select" &&
     selectedBlockIds.length === 0;
+
+  // PDF block selection is only meaningful for region-select questions; for
+  // free-text / multiple-choice the overlay must not capture clicks.
+  const blockSelectionActive =
+    activeQuestion?.question_type === "region_select";
 
   const selectionGranularity = activeQuestion?.selection_granularity || "sentence";
 
@@ -383,7 +470,13 @@ export default function ReaderView() {
           blocks={blocks}
           pageDimensions={dims}
           pageIndex={pageIndex}
-          activeQuestionId={annotationMode === "highlight" ? "__annotation__" : activeQuestionId}
+          activeQuestionId={
+            annotationMode === "highlight"
+              ? "__annotation__"
+              : blockSelectionActive
+              ? activeQuestionId
+              : null
+          }
           selectionGranularity={selectionGranularity}
           selectedBlockIds={[
             ...selectedBlockIds,
@@ -413,6 +506,7 @@ export default function ReaderView() {
     [
       blocks,
       activeQuestionId,
+      blockSelectionActive,
       selectionGranularity,
       selectedBlockIds,
       handleBlockClick,
@@ -532,6 +626,7 @@ export default function ReaderView() {
             onPageDimensions={setPageDimensions}
             renderOverlay={renderOverlay}
             searchHighlightPage={searchHighlightPage}
+            jumpToPage={jumpTarget}
           />
         </div>
 
@@ -539,9 +634,13 @@ export default function ReaderView() {
           questions={assignment.questions}
           answers={answers}
           blocks={blocks}
+          sections={assignment.sections || []}
           activeQuestionId={activeQuestionId}
           onQuestionSelect={handleQuestionSelectWrapped}
           onFreeTextChange={handleFreeTextChange}
+          onOptionChange={handleOptionChange}
+          onPositionalSelect={handlePositionalSelect}
+          onJumpToPage={handleJumpToPage}
           onSubmit={handleSubmit}
           isSubmitted={submission?.is_submitted || false}
           mode={panelMode}

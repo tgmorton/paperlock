@@ -125,22 +125,18 @@ export default function BlockEditorView() {
   }, [selectedBlockIds, blocks]);
 
   const canSplit = useMemo(() => {
+    // Split only undoes a manual merge (group_id). The auto sentence/paragraph
+    // groups aren't backed by the split endpoint, so enabling it for them would
+    // silently do nothing (or affect the wrong blocks).
     if (!selectedBlock) return false;
-    return (
-      selectedBlock.group_id != null ||
-      selectedBlock.sentence_group != null ||
-      selectedBlock.paragraph_group != null
-    );
+    return selectedBlock.group_id != null;
   }, [selectedBlock]);
 
   const handleSplit = useCallback(async () => {
     if (!canSplit || actionLoading || !selectedBlock) return;
     try {
       setActionLoading(true);
-      const groupId =
-        selectedBlock.group_id ??
-        selectedBlock.sentence_group ??
-        selectedBlock.paragraph_group;
+      const groupId = selectedBlock.group_id;
       await api.splitBlocks(groupId);
       await reloadBlocks();
       setSelectedBlockIds(new Set());

@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, Text, Float, Boolean, DateTime, JSON,
-    ForeignKey, Enum as SAEnum
+    ForeignKey, Enum as SAEnum, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
@@ -18,6 +18,11 @@ class UserRole(str, enum.Enum):
 class QuestionType(str, enum.Enum):
     region_select = "region_select"
     free_text = "free_text"
+    multiple_choice = "multiple_choice"
+    short_answer = "short_answer"
+    matching = "matching"
+    cloze = "cloze"
+    scale = "scale"
 
 
 class SelectionGranularity(str, enum.Enum):
@@ -37,8 +42,12 @@ class User(Base):
     access_code = Column(String(64), unique=True, nullable=False, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    submissions = relationship("Submission", back_populates="student")
-    annotations = relationship("Annotation", back_populates="student")
+    submissions = relationship(
+        "Submission", back_populates="student", cascade="all, delete-orphan"
+    )
+    annotations = relationship(
+        "Annotation", back_populates="student", cascade="all, delete-orphan"
+    )
 
 
 class PDF(Base):
@@ -91,34 +100,83 @@ class Assignment(Base):
     creator = relationship("User")
     questions = relationship("Question", back_populates="assignment", cascade="all, delete-orphan",
                              order_by="Question.order")
+    sections = relationship("Section", back_populates="assignment", cascade="all, delete-orphan",
+                            order_by="Section.order")
     submissions = relationship("Submission", back_populates="assignment")
+
+
+class Section(Base):
+    __tablename__ = "sections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    assignment_id = Column(Integer, ForeignKey("assignments.id"), nullable=False, index=True)
+    title = Column(String(300), nullable=False)
+    description = Column(Text, nullable=True)  # markdown intro / instructions
+    order = Column(Integer, nullable=False, default=0)
+
+    assignment = relationship("Assignment", back_populates="sections")
 
 
 class Question(Base):
     __tablename__ = "questions"
 
     id = Column(Integer, primary_key=True, index=True)
-    assignment_id = Column(Integer, ForeignKey("assignments.id"), nullable=False)
+    assignment_id = Column(Integer, ForeignKey("assignments.id"), nullable=False, index=True)
     question_type = Column(SAEnum(QuestionType), nullable=False)
     prompt = Column(Text, nullable=False)
     order = Column(Integer, nullable=False, default=0)
     points = Column(Float, nullable=False, default=1.0)
     correct_block_ids = Column(JSON, nullable=True)  # list of OCRBlock IDs for auto-grading
-    allow_multiple = Column(Boolean, default=False)  # allow selecting multiple blocks
+    allow_multiple = Column(Boolean, default=False)  # region: multi-block; MC: multiple correct answers
+    options = Column(JSON, nullable=True)  # multiple_choice: list of option strings
+    correct_options = Column(JSON, nullable=True)  # multiple_choice: list of correct option indices
     selection_granularity = Column(
         SAEnum(SelectionGranularity), nullable=False, default=SelectionGranularity.sentence
     )
 
+    # Grouping + guidance
+    section_id = Column(Integer, ForeignKey("sections.id"), nullable=True, index=True)
+    guidance = Column(Text, nullable=True)        # "where to look" hint
+    target_page = Column(Integer, nullable=True)  # 1-based PDF page for jump-to-page
+    sample_answer = Column(Text, nullable=True)   # model answer shown after submit
+    grading_mode = Column(String(20), nullable=True)  # auto | manual | completion
+
+    # short_answer
+    accepted_answers = Column(JSON, nullable=True)  # list of acceptable strings
+
+    # matching
+    match_left = Column(JSON, nullable=True)       # list of prompt strings
+    match_right = Column(JSON, nullable=True)      # list of option strings
+    correct_matches = Column(JSON, nullable=True)  # right-index for each left item
+
+    # cloze (word-bank fill-in)
+    cloze_text = Column(Text, nullable=True)       # text with {{0}},{{1}} placeholders
+    cloze_bank = Column(JSON, nullable=True)       # list of bank words
+    cloze_answers = Column(JSON, nullable=True)    # correct bank-index per blank
+
+    # scale (Likert)
+    scale_min = Column(Integer, nullable=True)
+    scale_max = Column(Integer, nullable=True)
+
     assignment = relationship("Assignment", back_populates="questions")
-    answers = relationship("Answer", back_populates="question")
+    answers = relationship(
+        "Answer", back_populates="question", cascade="all, delete-orphan"
+    )
+    grades = relationship(
+        "Grade", back_populates="question", cascade="all, delete-orphan"
+    )
 
 
 class Submission(Base):
     __tablename__ = "submissions"
+    __table_args__ = (
+        UniqueConstraint("student_id", "assignment_id",
+                         name="uq_submission_student_assignment"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    assignment_id = Column(Integer, ForeignKey("assignments.id"), nullable=False)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    assignment_id = Column(Integer, ForeignKey("assignments.id"), nullable=False, index=True)
     submitted_at = Column(DateTime, nullable=True)
     started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_submitted = Column(Boolean, default=False)
@@ -131,12 +189,17 @@ class Submission(Base):
 
 class Answer(Base):
     __tablename__ = "answers"
+    __table_args__ = (
+        UniqueConstraint("submission_id", "question_id",
+                         name="uq_answer_submission_question"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
-    submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=False)
-    question_id = Column(Integer, ForeignKey("questions.id"), nullable=False)
+    submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=False, index=True)
+    question_id = Column(Integer, ForeignKey("questions.id"), nullable=False, index=True)
     selected_block_ids = Column(JSON, nullable=True)  # list of OCRBlock IDs
     free_text = Column(Text, nullable=True)
+    selected_options = Column(JSON, nullable=True)  # multiple_choice: list of selected option indices
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
 
@@ -163,10 +226,14 @@ class Annotation(Base):
 
 class Grade(Base):
     __tablename__ = "grades"
+    __table_args__ = (
+        UniqueConstraint("submission_id", "question_id",
+                         name="uq_grade_submission_question"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
-    submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=False)
-    question_id = Column(Integer, ForeignKey("questions.id"), nullable=False)
+    submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=False, index=True)
+    question_id = Column(Integer, ForeignKey("questions.id"), nullable=False, index=True)
     score = Column(Float, nullable=True)
     comments = Column(Text, nullable=True)
     graded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -174,5 +241,5 @@ class Grade(Base):
     is_auto_graded = Column(Boolean, default=False)
 
     submission = relationship("Submission", back_populates="grades")
-    question = relationship("Question")
+    question = relationship("Question", back_populates="grades")
     grader = relationship("User")

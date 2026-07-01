@@ -2,68 +2,34 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth } from "../hooks/useAuth";
+import { useToast } from "../components/Toast";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  LogOut,
-  FileText,
-  Clock,
-  CheckCircle2,
-  CircleDashed,
-  Pencil,
-} from "lucide-react";
+import { LogOut, FileText, ClipboardCheck, ChevronRight } from "lucide-react";
 
-function getAssignmentStatus(assignment) {
-  // Derive status from assignment data
-  if (assignment.is_submitted) return "submitted";
-  if (assignment.has_started) return "in_progress";
-  return "not_started";
-}
-
-function StatusBadge({ assignment }) {
-  const status = getAssignmentStatus(assignment);
-
-  if (status === "submitted") {
-    return (
-      <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100">
-        <CheckCircle2 className="size-3 mr-1" />
-        Submitted
-      </Badge>
-    );
-  }
-  if (status === "in_progress") {
-    return (
-      <Badge className="bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100">
-        <Pencil className="size-3 mr-1" />
-        In Progress
-      </Badge>
-    );
-  }
-  return (
-    <Badge variant="outline" className="text-muted-foreground">
-      <CircleDashed className="size-3 mr-1" />
-      Not Started
-    </Badge>
-  );
-}
-
-export default function StudentDashboard() {
-  const [assignments, setAssignments] = useState([]);
+export default function GradingHome() {
+  const [assignments, setAssignments] = useState(null);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const { toast } = useToast();
 
   useEffect(() => {
-    api.listAssignments().then(setAssignments);
-  }, []);
+    api
+      .listAssignments()
+      .then(setAssignments)
+      .catch((err) => {
+        setAssignments([]);
+        toast({ type: "error", message: err.message || "Failed to load assignments" });
+      });
+  }, [toast]);
 
   return (
     <div className="dashboard">
       <header className="dashboard-header">
         <div className="flex items-center gap-3">
           <div className="dashboard-logo">
-            <FileText className="size-5 text-[var(--pl-primary)]" />
+            <ClipboardCheck className="size-5 text-[var(--pl-primary)]" />
           </div>
-          <h1>PaperLock</h1>
+          <h1>Grading</h1>
         </div>
         <div className="user-info">
           <span>{user.name}</span>
@@ -74,11 +40,16 @@ export default function StudentDashboard() {
         </div>
       </header>
       <main>
-        <h2 className="dashboard-section-title">Your Assignments</h2>
-        {assignments.length === 0 ? (
+        <h2 className="dashboard-section-title">Select an assignment to grade</h2>
+        {assignments === null ? (
+          <div className="empty-state">
+            <FileText className="size-8 text-muted-foreground mx-auto mb-3 opacity-40 animate-pulse" />
+            <p>Loading assignments…</p>
+          </div>
+        ) : assignments.length === 0 ? (
           <div className="empty-state">
             <FileText className="size-10 text-muted-foreground mx-auto mb-3 opacity-40" />
-            <p>No assignments available yet.</p>
+            <p>No assignments to grade yet.</p>
           </div>
         ) : (
           <div className="assignment-grid">
@@ -88,17 +59,17 @@ export default function StudentDashboard() {
                 role="button"
                 tabIndex={0}
                 className="assignment-card"
-                onClick={() => navigate(`/read/${a.id}`)}
+                onClick={() => navigate(`/grading/${a.id}`)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    navigate(`/read/${a.id}`);
+                    navigate(`/grading/${a.id}`);
                   }
                 }}
               >
                 <div className="assignment-card-top">
                   <h3>{a.title}</h3>
-                  <StatusBadge assignment={a} />
+                  <ChevronRight className="size-4 text-muted-foreground" />
                 </div>
                 {a.description && (
                   <p className="assignment-description">{a.description}</p>
@@ -109,12 +80,6 @@ export default function StudentDashboard() {
                     {a.questions.length} question
                     {a.questions.length !== 1 ? "s" : ""}
                   </span>
-                  {a.available_until && (
-                    <span className="flex items-center gap-1">
-                      <Clock className="size-3.5" />
-                      Due: {new Date(a.available_until).toLocaleDateString()}
-                    </span>
-                  )}
                 </div>
               </div>
             ))}

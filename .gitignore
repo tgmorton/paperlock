@@ -1,9 +1,30 @@
+# Python
 venv/
 __pycache__/
 *.pyc
+
+# Node / build output
 node_modules/
-*.db
-uploads/*
-!uploads/.gitkeep
 dist/
+
+# Database — contains student data + authored assignments; never commit
+*.db
+
+# Uploaded PDFs / student content (assignment material, not for the repo)
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Secrets / environment
 .env
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Claude Code local state (agent worktrees)
+.claude/worktrees/
+
+# Deployment artifacts (infra-specific; kept out of the public repo)
+/DEPLOY.md
+/docker-compose.prod.yml
+/deploy/

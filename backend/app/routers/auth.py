@@ -7,7 +7,7 @@ import secrets
 import os
 
 from app.database import get_db
-from app.models import User, UserRole
+from app.models import User, UserRole, Grade
 
 router = APIRouter()
 
@@ -115,7 +115,11 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/users", response_model=CreateUserResponse)
-def create_user(req: CreateUserRequest, db: Session = Depends(get_db)):
+def create_user(
+    req: CreateUserRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.instructor)),
+):
     existing = db.query(User).filter(User.pid == req.pid).first()
     if existing:
         raise HTTPException(status_code=409, detail="User with this PID already exists")
@@ -137,7 +141,11 @@ def create_user(req: CreateUserRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/users/batch", response_model=list[CreateUserResponse])
-def batch_create_users(req: BatchCreateRequest, db: Session = Depends(get_db)):
+def batch_create_users(
+    req: BatchCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.instructor)),
+):
     created = []
     for student_req in req.students:
         existing = db.query(User).filter(User.pid == student_req.pid).first()
@@ -215,6 +223,11 @@ def delete_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Detach this user from any grades they authored so deleting them doesn't
+    # violate the grades.graded_by foreign key (their submissions/annotations
+    # cascade-delete via the relationships).
+    db.query(Grade).filter(Grade.graded_by == user_id).update({Grade.graded_by: None})
 
     db.delete(user)
     db.commit()

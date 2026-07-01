@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth } from "../hooks/useAuth";
+import { useToast } from "../components/Toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -220,6 +221,7 @@ const emptyAssignmentForm = {
 
 function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }) {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
@@ -228,8 +230,60 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
 
   // Delete confirmation
   const [deleteConfirm, setDeleteConfirm] = useState({ open: false, id: null, title: "" });
+  const [importing, setImporting] = useState(false);
+  const [exportingId, setExportingId] = useState(null);
+  const importInputRef = useRef(null);
 
   const pdfMap = Object.fromEntries(pdfs.map((p) => [p.id, p]));
+
+  // Export an assignment to a portable bundle file (PDF + blocks + questions
+  // + answer keys) that can be imported on another PaperLock server.
+  const handleExportBundle = async (a) => {
+    setExportingId(a.id);
+    try {
+      const bundle = await api.exportAssignmentBundle(a.id);
+      const safe = (a.title || "assignment").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+      const blob = new Blob([JSON.stringify(bundle)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${safe}.paperlock.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      toast({ type: "success", message: `Exported "${a.title}" as a bundle.` });
+    } catch (err) {
+      toast({ type: "error", message: err.message || "Export failed" });
+    } finally {
+      setExportingId(null);
+    }
+  };
+
+  const handleImportFile = async (file) => {
+    if (!file) return;
+    setImporting(true);
+    try {
+      const text = await file.text();
+      let bundle;
+      try {
+        bundle = JSON.parse(text);
+      } catch {
+        throw new Error("That file isn't a valid PaperLock bundle (not JSON).");
+      }
+      if (!bundle?.pdf_content_base64 || !Array.isArray(bundle?.questions)) {
+        throw new Error("That file isn't a PaperLock assignment bundle.");
+      }
+      const created = await api.importAssignmentBundle(bundle);
+      setAssignments((prev) => [...prev, created]);
+      toast({
+        type: "success",
+        message: `Imported "${created.title}". Set its availability dates when ready.`,
+      });
+    } catch (err) {
+      toast({ type: "error", message: err.message || "Import failed" });
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const updateField = (field, value) => setForm((f) => ({ ...f, [field]: value }));
 
@@ -247,21 +301,22 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
       setAssignments((prev) => [...prev, created]);
       setForm(emptyAssignmentForm);
       setCreateOpen(false);
+      toast({ type: "success", message: "Assignment created." });
     } catch (err) {
-      alert(err.message);
+      toast({ type: "error", message: err.message || "Could not create assignment" });
     } finally {
       setSaving(false);
     }
   };
 
   const handleEdit = async () => {
-    if (!form.title || !form.pdf_id || !editTarget) return;
+    if (!form.title || !editTarget) return;
     setSaving(true);
     try {
+      // pdf_id is intentionally omitted — the PDF can't change after creation.
       const updated = await api.updateAssignment(editTarget.id, {
         title: form.title,
         description: form.description,
-        pdf_id: parseInt(form.pdf_id),
         available_from: form.available_from ? new Date(form.available_from).toISOString() : null,
         available_until: form.available_until ? new Date(form.available_until).toISOString() : null,
       });
@@ -269,8 +324,9 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
       setEditOpen(false);
       setEditTarget(null);
       setForm(emptyAssignmentForm);
+      toast({ type: "success", message: "Assignment updated." });
     } catch (err) {
-      alert(err.message);
+      toast({ type: "error", message: err.message || "Update failed" });
       refreshAssignments();
     } finally {
       setSaving(false);
@@ -295,13 +351,14 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
     setAssignments((a) => a.filter((x) => x.id !== id));
     try {
       await api.deleteAssignment(id);
+      toast({ type: "success", message: "Assignment deleted." });
     } catch (err) {
       setAssignments(prev);
-      alert(err.message);
+      toast({ type: "error", message: err.message || "Could not delete assignment" });
     }
   };
 
-  const assignmentForm = (
+  const assignmentFields = (isEdit) => (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <label style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--pl-text-secondary)" }}>
         Title
@@ -327,6 +384,7 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
         <select
           value={form.pdf_id}
           onChange={(e) => updateField("pdf_id", e.target.value)}
+          disabled={isEdit}
           style={{
             display: "block",
             width: "100%",
@@ -334,9 +392,10 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
             padding: "6px 10px",
             borderRadius: "var(--radius-sm)",
             border: "1.5px solid var(--pl-border)",
-            background: "var(--pl-bg)",
+            background: isEdit ? "var(--pl-bg-sunken)" : "var(--pl-bg)",
             fontSize: "0.85rem",
-            color: "var(--pl-text)",
+            color: isEdit ? "var(--pl-text-secondary)" : "var(--pl-text)",
+            cursor: isEdit ? "not-allowed" : "pointer",
           }}
         >
           <option value="">Select a PDF...</option>
@@ -346,6 +405,11 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
             </option>
           ))}
         </select>
+        {isEdit && (
+          <span style={{ fontSize: "0.72rem", fontWeight: 400, color: "var(--pl-text-secondary)", marginTop: 4, display: "block" }}>
+            The PDF can't be changed after creation (questions reference its text). Create a new assignment to use a different PDF.
+          </span>
+        )}
       </label>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <label style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--pl-text-secondary)" }}>
@@ -374,14 +438,35 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
     <div>
       <div className="section-header">
         <h2>Assignments</h2>
-        <Button
-          onClick={() => {
-            setForm(emptyAssignmentForm);
-            setCreateOpen(true);
-          }}
-        >
-          <Plus className="size-4" /> New Assignment
-        </Button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleImportFile(file);
+              e.target.value = "";
+            }}
+          />
+          <Button
+            variant="outline"
+            onClick={() => importInputRef.current?.click()}
+            disabled={importing}
+            title="Import an assignment bundle exported from another PaperLock server"
+          >
+            <Upload className="size-4" /> {importing ? "Importing..." : "Import"}
+          </Button>
+          <Button
+            onClick={() => {
+              setForm(emptyAssignmentForm);
+              setCreateOpen(true);
+            }}
+          >
+            <Plus className="size-4" /> New Assignment
+          </Button>
+        </div>
       </div>
 
       {/* Create Dialog */}
@@ -390,7 +475,7 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
           <DialogHeader>
             <DialogTitle>New Assignment</DialogTitle>
           </DialogHeader>
-          {assignmentForm}
+          {assignmentFields(false)}
           <DialogFooter>
             <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
             <Button onClick={handleCreate} disabled={saving || !form.title || !form.pdf_id}>
@@ -412,10 +497,10 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
           <DialogHeader>
             <DialogTitle>Edit Assignment</DialogTitle>
           </DialogHeader>
-          {assignmentForm}
+          {assignmentFields(true)}
           <DialogFooter>
             <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
-            <Button onClick={handleEdit} disabled={saving || !form.title || !form.pdf_id}>
+            <Button onClick={handleEdit} disabled={saving || !form.title}>
               {saving ? "Saving..." : "Save Changes"}
             </Button>
           </DialogFooter>
@@ -507,6 +592,16 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
                   <Edit2 className="size-3" /> Edit
                 </Button>
                 <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleExportBundle(a)}
+                  disabled={exportingId === a.id}
+                  title="Download a portable bundle to import on another server"
+                >
+                  <Download className="size-3" />{" "}
+                  {exportingId === a.id ? "Exporting..." : "Export"}
+                </Button>
+                <Button
                   variant="destructive"
                   size="sm"
                   onClick={() => setDeleteConfirm({ open: true, id: a.id, title: a.title })}
@@ -528,6 +623,7 @@ function AssignmentTab({ assignments, setAssignments, pdfs, refreshAssignments }
 
 function PdfUploadTab({ pdfs, setPdfs, refreshPdfs }) {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null); // { type: "success" | "error", message }
   const [dragActive, setDragActive] = useState(false);
@@ -546,10 +642,19 @@ function PdfUploadTab({ pdfs, setPdfs, refreshPdfs }) {
     try {
       const pdf = await api.uploadPdf(file);
       setPdfs((prev) => [...prev, pdf]);
-      setUploadStatus({
-        type: "success",
-        message: `Uploaded "${pdf.original_name}" -- ${pdf.page_count} pages, text blocks extracted.`,
-      });
+      // No extractable text layer (e.g. a scanned/image-only PDF) means
+      // students will have nothing to select — warn the instructor loudly.
+      if (pdf.has_text === false || pdf.block_count === 0) {
+        setUploadStatus({
+          type: "warning",
+          message: `Uploaded "${pdf.original_name}" (${pdf.page_count} pages), but NO selectable text was found. This looks like a scanned/image PDF — region-select questions won't work. Use a text-based PDF.`,
+        });
+      } else {
+        setUploadStatus({
+          type: "success",
+          message: `Uploaded "${pdf.original_name}" — ${pdf.page_count} pages, ${pdf.block_count} text blocks extracted.`,
+        });
+      }
     } catch (err) {
       setUploadStatus({ type: "error", message: err.message });
     } finally {
@@ -589,9 +694,10 @@ function PdfUploadTab({ pdfs, setPdfs, refreshPdfs }) {
     setPdfs((p) => p.filter((x) => x.id !== id));
     try {
       await api.deletePdf(id);
+      toast({ type: "success", message: "PDF deleted." });
     } catch (err) {
       setPdfs(prev);
-      alert(err.message);
+      toast({ type: "error", message: err.message || "Could not delete PDF" });
     }
   };
 
@@ -640,12 +746,8 @@ function PdfUploadTab({ pdfs, setPdfs, refreshPdfs }) {
       {/* Upload status */}
       {uploadStatus && (
         <div
-          className="upload-result"
-          style={{
-            marginBottom: 24,
-            borderLeftColor:
-              uploadStatus.type === "success" ? "var(--pl-success)" : "var(--pl-danger, #e74c3c)",
-          }}
+          className={`upload-result upload-result-${uploadStatus.type}`}
+          style={{ marginBottom: 24 }}
         >
           <p>{uploadStatus.message}</p>
         </div>
@@ -967,13 +1069,7 @@ function CsvImportSection({ onImported }) {
       )}
 
       {importResult && (
-        <div
-          className="upload-result"
-          style={{
-            borderLeftColor:
-              importResult.type === "success" ? "var(--pl-success)" : "var(--pl-danger, #e74c3c)",
-          }}
-        >
+        <div className={`upload-result upload-result-${importResult.type}`}>
           <p>{importResult.message}</p>
         </div>
       )}
@@ -986,6 +1082,7 @@ function CsvImportSection({ onImported }) {
 // ---------------------------------------------------------------------------
 
 function StudentTable({ students, setStudents, loading, refreshStudents }) {
+  const { toast } = useToast();
   const [addForm, setAddForm] = useState({ pid: "", name: "" });
   const [adding, setAdding] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
@@ -999,8 +1096,9 @@ function StudentTable({ students, setStudents, loading, refreshStudents }) {
       const user = await api.createUser({ pid: addForm.pid, name: addForm.name, role: "student" });
       setStudents((prev) => [...prev, user]);
       setAddForm({ pid: "", name: "" });
+      toast({ type: "success", message: `Added ${user.name}.` });
     } catch (err) {
-      alert(err.message);
+      toast({ type: "error", message: err.message || "Could not add student" });
     } finally {
       setAdding(false);
     }
@@ -1011,9 +1109,10 @@ function StudentTable({ students, setStudents, loading, refreshStudents }) {
     setStudents((s) => s.filter((x) => x.id !== id));
     try {
       await api.deleteUser(id);
+      toast({ type: "success", message: "Student removed." });
     } catch (err) {
       setStudents(prev);
-      alert(err.message);
+      toast({ type: "error", message: err.message || "Could not remove student" });
     }
   };
 
@@ -1021,8 +1120,9 @@ function StudentTable({ students, setStudents, loading, refreshStudents }) {
     try {
       const updated = await api.resetUserCode(id);
       setStudents((prev) => prev.map((s) => (s.id === id ? { ...s, ...updated } : s)));
+      toast({ type: "success", message: "Access code regenerated." });
     } catch (err) {
-      alert(err.message);
+      toast({ type: "error", message: err.message || "Could not reset code" });
     }
   };
 
@@ -1170,7 +1270,7 @@ function StudentTable({ students, setStudents, loading, refreshStudents }) {
 function ExportCodesButton({ students }) {
   const handleExport = () => {
     if (students.length === 0) return;
-    const loginUrl = `${window.location.origin}/login`;
+    const loginUrl = `${window.location.origin}${import.meta.env.BASE_URL}login`;
     const rows = [
       "Name,PID,Access Code,Login URL",
       ...students.map(
@@ -1203,6 +1303,7 @@ function ExportCodesButton({ students }) {
 // ---------------------------------------------------------------------------
 
 function TaSection({ tas, setTas, loading, refreshTas }) {
+  const { toast } = useToast();
   const [addForm, setAddForm] = useState({ pid: "", name: "" });
   const [adding, setAdding] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
@@ -1215,8 +1316,9 @@ function TaSection({ tas, setTas, loading, refreshTas }) {
       const user = await api.createUser({ pid: addForm.pid, name: addForm.name, role: "ta" });
       setTas((prev) => [...prev, user]);
       setAddForm({ pid: "", name: "" });
+      toast({ type: "success", message: `Added ${user.name}.` });
     } catch (err) {
-      alert(err.message);
+      toast({ type: "error", message: err.message || "Could not add TA" });
     } finally {
       setAdding(false);
     }
@@ -1227,9 +1329,10 @@ function TaSection({ tas, setTas, loading, refreshTas }) {
     setTas((t) => t.filter((x) => x.id !== id));
     try {
       await api.deleteUser(id);
+      toast({ type: "success", message: "TA removed." });
     } catch (err) {
       setTas(prev);
-      alert(err.message);
+      toast({ type: "error", message: err.message || "Could not remove TA" });
     }
   };
 

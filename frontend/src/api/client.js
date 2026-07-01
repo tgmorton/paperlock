@@ -1,4 +1,9 @@
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+// Defaults to a relative "/api" so the app works same-origin in both dev
+// (Vite dev-server proxy) and production (nginx reverse proxy) with no env
+// config. Override with VITE_API_URL only for unusual split deployments.
+const API_BASE =
+  import.meta.env.VITE_API_URL ||
+  `${import.meta.env.BASE_URL.replace(/\/+$/, "")}/api`;
 
 async function request(path, options = {}) {
   const token = localStorage.getItem("paperlock_token");
@@ -16,7 +21,10 @@ async function request(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
 
   if (!res.ok) {
-    if (res.status === 401) {
+    // Only treat a 401 as a session expiry when we actually had a session.
+    // A failed login (no token) is an invalid-credentials error, not an
+    // expired session — otherwise the modal pops over the login screen.
+    if (res.status === 401 && token) {
       window.dispatchEvent(new Event("session-expired"));
     }
     const error = await res.json().catch(() => ({ detail: res.statusText }));
@@ -76,12 +84,16 @@ export const api = {
   getAnnotations: (pdfId) => request(`/submissions/annotations/${pdfId}`),
   createAnnotation: (data) =>
     request("/submissions/annotations", { method: "POST", body: data }),
+  updateAnnotation: (id, data) =>
+    request(`/submissions/annotations/${id}`, { method: "PATCH", body: data }),
   deleteAnnotation: (id) =>
     request(`/submissions/annotations/${id}`, { method: "DELETE" }),
 
   // Grading
   listSubmissions: (assignmentId) =>
     request(`/grading/assignments/${assignmentId}/submissions`),
+  getSubmissionGrades: (submissionId) =>
+    request(`/grading/submissions/${submissionId}/grades`),
   gradeQuestion: (data) =>
     request("/grading/grade", { method: "POST", body: data }),
   autoGrade: (assignmentId) =>
@@ -94,6 +106,19 @@ export const api = {
   deletePdf: (id) => request(`/pdf/${id}`, { method: "DELETE" }),
   splitBlocks: (groupId) =>
     request("/pdf/blocks/split", { method: "POST", body: { group_id: groupId } }),
+
+  // Sections
+  createSection: (assignmentId, data) =>
+    request(`/assignments/${assignmentId}/sections`, { method: "POST", body: data }),
+  updateSection: (assignmentId, sectionId, data) =>
+    request(`/assignments/${assignmentId}/sections/${sectionId}`, { method: "PUT", body: data }),
+  deleteSection: (assignmentId, sectionId) =>
+    request(`/assignments/${assignmentId}/sections/${sectionId}`, { method: "DELETE" }),
+
+  // Assignment bundles (portable export/import between servers)
+  exportAssignmentBundle: (id) => request(`/assignments/${id}/bundle`),
+  importAssignmentBundle: (bundle) =>
+    request("/assignments/import", { method: "POST", body: bundle }),
 
   // Assignment management
   updateAssignment: (id, data) =>

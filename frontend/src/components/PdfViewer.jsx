@@ -18,6 +18,7 @@ export default function PdfViewer({
   onPageDimensions,
   renderOverlay, // (pageIndex, dims) => ReactNode
   searchHighlightPage, // optional: page to scroll to for search
+  jumpToPage, // optional: { page, n } to scroll to (n changes to force re-scroll)
 }) {
   const scrollRef = useRef(null);
   const [pdfDoc, setPdfDoc] = useState(null);
@@ -195,6 +196,14 @@ export default function PdfViewer({
       scrollToPage(searchHighlightPage);
     }
   }, [searchHighlightPage, scrollToPage]);
+
+  // Scroll to a "jump to page" target (guidance buttons). The nonce makes
+  // clicking the same page again re-scroll.
+  useEffect(() => {
+    if (jumpToPage?.page >= 1) {
+      scrollToPage(jumpToPage.page);
+    }
+  }, [jumpToPage, scrollToPage]);
 
   // Page jump handler
   const handlePageJump = (e) => {

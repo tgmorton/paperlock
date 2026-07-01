@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import uuid
@@ -32,6 +33,8 @@ class PDFResponse(BaseModel):
     id: int
     original_name: str
     page_count: int
+    block_count: int = 0
+    has_text: bool = True
 
 
 class PDFListItem(BaseModel):
@@ -80,9 +83,10 @@ async def upload_pdf(
     with open(filepath, "wb") as f:
         f.write(content)
 
-    # Extract text blocks
+    # Extract text blocks. This is CPU-heavy (PyMuPDF + spaCy), so run it in a
+    # threadpool to avoid blocking the event loop for other requests.
     try:
-        page_count, blocks = extract_text_blocks(filepath)
+        page_count, blocks = await run_in_threadpool(extract_text_blocks, filepath)
     except Exception as e:
         os.remove(filepath)
         raise HTTPException(status_code=422, detail=f"Failed to process PDF: {e}")
@@ -115,7 +119,10 @@ async def upload_pdf(
 
     db.commit()
     db.refresh(pdf)
-    return PDFResponse(id=pdf.id, original_name=pdf.original_name, page_count=pdf.page_count)
+    return PDFResponse(
+        id=pdf.id, original_name=pdf.original_name, page_count=pdf.page_count,
+        block_count=len(blocks), has_text=len(blocks) > 0,
+    )
 
 
 @router.get("/{pdf_id}/serve")

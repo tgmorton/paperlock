@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth } from "../hooks/useAuth";
+import { useToast } from "../components/Toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -18,22 +19,31 @@ export default function GradingView() {
   const { assignmentId } = useParams();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const { toast } = useToast();
   const [submissions, setSubmissions] = useState([]);
   const [assignment, setAssignment] = useState(null);
   const [selectedSub, setSelectedSub] = useState(null);
   const [subDetail, setSubDetail] = useState(null);
+  // grades keyed `${submissionId}_${questionId}` -> { score, comments, saving, error }
   const [grades, setGrades] = useState({});
   const [pdfBlocks, setPdfBlocks] = useState([]);
 
+  const refreshList = () =>
+    api.listSubmissions(assignmentId).then(setSubmissions).catch(() => {});
+
   useEffect(() => {
     async function load() {
-      const a = await api.getAssignment(assignmentId);
-      setAssignment(a);
-      api.listSubmissions(assignmentId).then(setSubmissions);
-      // Load PDF blocks to resolve IDs to text
-      if (a.pdf_id) {
-        const blocks = await api.getBlocks(a.pdf_id);
-        setPdfBlocks(blocks);
+      try {
+        const a = await api.getAssignment(assignmentId);
+        setAssignment(a);
+        refreshList();
+        // Load PDF blocks to resolve IDs to text
+        if (a.pdf_id) {
+          const blocks = await api.getBlocks(a.pdf_id);
+          setPdfBlocks(blocks);
+        }
+      } catch (err) {
+        toast({ type: "error", message: err.message || "Failed to load assignment" });
       }
     }
     load();
@@ -64,38 +74,85 @@ export default function GradingView() {
 
   const loadSubmission = async (subId) => {
     setSelectedSub(subId);
-    const detail = await api.getSubmission(subId);
-    setSubDetail(detail);
+    setSubDetail(null);
+    try {
+      const [detail, existingGrades] = await Promise.all([
+        api.getSubmission(subId),
+        api.getSubmissionGrades(subId),
+      ]);
+      setSubDetail(detail);
+      // Seed the grade inputs with what's already been scored.
+      setGrades((prev) => {
+        const next = { ...prev };
+        for (const g of existingGrades) {
+          next[`${subId}_${g.question_id}`] = {
+            score: g.score ?? "",
+            comments: g.comments ?? "",
+            saved: g.score != null, // already persisted
+          };
+        }
+        return next;
+      });
+    } catch (err) {
+      toast({ type: "error", message: err.message || "Failed to load submission" });
+    }
   };
 
-  const handleGrade = async (questionId, score, comments) => {
-    await api.gradeQuestion({
-      submission_id: selectedSub,
-      question_id: questionId,
-      score: parseFloat(score),
-      comments,
-    });
-    setGrades((prev) => ({
-      ...prev,
-      [`${selectedSub}_${questionId}`]: { score, comments },
-    }));
+  const setGradeField = (key, patch) =>
+    setGrades((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }));
+
+  const handleGrade = async (questionId, rawScore) => {
+    const key = `${selectedSub}_${questionId}`;
+    if (rawScore === "" || rawScore === null || rawScore === undefined) return;
+    const score = parseFloat(rawScore);
+    if (Number.isNaN(score)) {
+      setGradeField(key, { error: "Invalid number" });
+      return;
+    }
+    setGradeField(key, { saving: true, error: null });
+    try {
+      await api.gradeQuestion({
+        submission_id: selectedSub,
+        question_id: questionId,
+        score,
+        comments: grades[key]?.comments || "",
+      });
+      setGradeField(key, { saving: false, error: null, saved: true });
+      refreshList();
+    } catch (err) {
+      setGradeField(key, { saving: false, error: err.message || "Save failed" });
+      toast({ type: "error", message: `Could not save score: ${err.message || "error"}` });
+    }
   };
 
   const handleAutoGrade = async () => {
-    const result = await api.autoGrade(assignmentId);
-    alert(`Auto-graded ${result.graded} answers`);
-    api.listSubmissions(assignmentId).then(setSubmissions);
+    try {
+      const result = await api.autoGrade(assignmentId);
+      toast({
+        type: "success",
+        message: `Auto-graded ${result.graded} answer${result.graded === 1 ? "" : "s"}.`,
+      });
+      refreshList();
+      // Reflect any new auto-grades in the open submission.
+      if (selectedSub) loadSubmission(selectedSub);
+    } catch (err) {
+      toast({ type: "error", message: `Auto-grade failed: ${err.message || "error"}` });
+    }
   };
 
   const handleExport = async () => {
-    const csv = await api.exportCsv(assignmentId);
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `grades_assignment_${assignmentId}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      const csv = await api.exportCsv(assignmentId);
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `grades_assignment_${assignmentId}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast({ type: "error", message: `Export failed: ${err.message || "error"}` });
+    }
   };
 
   if (!assignment)
@@ -190,7 +247,7 @@ export default function GradingView() {
                   (a) => a.question_id === q.id
                 );
                 const gradeKey = `${selectedSub}_${q.id}`;
-                const existingGrade = grades[gradeKey];
+                const gradeState = grades[gradeKey] || {};
 
                 return (
                   <div key={q.id} className="grade-item">
@@ -202,10 +259,80 @@ export default function GradingView() {
                       <span className="points">({q.points} pts)</span>
                     </div>
                     <div className="grade-answer">
-                      {q.question_type === "free_text" ? (
+                      {q.question_type === "free_text" || q.question_type === "short_answer" ? (
+                        <>
+                          <p className="free-text-answer">
+                            {answer?.free_text || "(no answer)"}
+                          </p>
+                          {q.question_type === "short_answer" && q.accepted_answers?.length > 0 && (
+                            <p className="grade-answer-label">
+                              Accepted: {q.accepted_answers.join(" / ")}
+                            </p>
+                          )}
+                        </>
+                      ) : q.question_type === "scale" ? (
                         <p className="free-text-answer">
-                          {answer?.free_text || "(no answer)"}
+                          Selected: {answer?.selected_options?.[0] ?? "(no answer)"}
                         </p>
+                      ) : q.question_type === "matching" ? (
+                        <div className="mc-grade">
+                          {(q.match_left || []).map((left, i) => {
+                            const chosen = answer?.selected_options?.[i];
+                            const correct = q.correct_matches?.[i];
+                            const ok = chosen != null && chosen === correct;
+                            return (
+                              <div key={i} className={`mc-grade-opt${chosen != null && !ok ? " incorrect" : ""}${ok ? " correct" : ""}`}>
+                                <span className="mc-grade-text">
+                                  {left} → {chosen != null ? (q.match_right?.[chosen] ?? "?") : "(blank)"}
+                                </span>
+                                {correct != null && (
+                                  <span className="mc-grade-key">{q.match_right?.[correct]}</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : q.question_type === "cloze" ? (
+                        <div className="mc-grade">
+                          {(q.cloze_answers || []).map((corr, bi) => {
+                            const chosen = answer?.selected_options?.[bi];
+                            const ok = chosen != null && chosen === corr;
+                            return (
+                              <div key={bi} className={`mc-grade-opt${chosen != null && !ok ? " incorrect" : ""}${ok ? " correct" : ""}`}>
+                                <span className="mc-grade-text">
+                                  Blank {bi}: {chosen != null ? (q.cloze_bank?.[chosen] ?? "?") : "(blank)"}
+                                </span>
+                                <span className="mc-grade-key">{q.cloze_bank?.[corr]}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : q.question_type === "multiple_choice" ? (
+                        <div className="mc-grade">
+                          {(q.options || []).map((opt, i) => {
+                            const chosen = answer?.selected_options?.includes(i);
+                            const correct = q.correct_options?.includes(i);
+                            return (
+                              <div
+                                key={i}
+                                className={`mc-grade-opt${chosen ? " chosen" : ""}${
+                                  correct ? " correct" : ""
+                                }${chosen && !correct ? " incorrect" : ""}`}
+                              >
+                                <span className="mc-grade-marker">
+                                  {chosen ? "●" : "○"}
+                                </span>
+                                <span className="mc-grade-text">{opt}</span>
+                                {correct && (
+                                  <span className="mc-grade-key">correct</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {!answer?.selected_options?.length && (
+                            <p className="grade-answer-empty">(no answer)</p>
+                          )}
+                        </div>
                       ) : (
                         <div>
                           {answer?.selected_block_ids?.length ? (
@@ -225,17 +352,28 @@ export default function GradingView() {
                     </div>
                     <div className="grade-input">
                       <input
+                        key={gradeKey}
                         type="number"
                         min="0"
                         max={q.points}
                         step="0.5"
                         placeholder="Score"
-                        defaultValue={existingGrade?.score ?? ""}
-                        onBlur={(e) =>
-                          handleGrade(q.id, e.target.value, "")
+                        value={gradeState.score ?? ""}
+                        onChange={(e) =>
+                          setGradeField(gradeKey, { score: e.target.value, saved: false })
                         }
+                        onBlur={(e) => handleGrade(q.id, e.target.value)}
                       />
                       <span>/ {q.points}</span>
+                      {gradeState.saving && (
+                        <span className="grade-status saving">Saving…</span>
+                      )}
+                      {!gradeState.saving && gradeState.error && (
+                        <span className="grade-status error">{gradeState.error}</span>
+                      )}
+                      {!gradeState.saving && !gradeState.error && gradeState.saved && (
+                        <span className="grade-status saved">Saved</span>
+                      )}
                     </div>
                   </div>
                 );
